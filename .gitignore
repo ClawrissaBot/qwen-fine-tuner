@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.next/
+.env.local
+
+# Training artifacts
+outputs/
+checkpoints/
+merged_models/
+wandb/
+runs/
+*.pt
+*.bin
+*.safetensors
+
+# Data
+uploads/
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/data/
+
+# Env
+.env
