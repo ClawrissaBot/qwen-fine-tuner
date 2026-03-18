@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Upload, Download, Trash2, Search, BarChart3, CheckCircle, Copy, Tag, X, ChevronDown, ChevronUp } from 'lucide-react'
+import { Plus, Upload, Download, Trash2, Search, BarChart3, CheckCircle, Copy, Tag, X, ChevronDown, ChevronUp, Database } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card'

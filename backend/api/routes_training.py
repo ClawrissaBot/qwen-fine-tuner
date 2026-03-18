@@ -87,7 +87,10 @@ async def delete_job(job_id: str):
 
 @router.post("/jobs/{job_id}/export")
 async def export_model(job_id: str, req: ExportRequest):
-    path = training_manager.export_model(job_id, req.merge)
+    try:
+        path = training_manager.export_model(job_id, req.merge)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"path": str(path)}
 
 

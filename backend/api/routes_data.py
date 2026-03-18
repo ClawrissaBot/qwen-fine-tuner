@@ -77,7 +77,10 @@ async def add_example(dataset_id: str, example: ExampleUpdate):
 
 @router.put("/datasets/{dataset_id}/examples/{example_id}")
 async def update_example(dataset_id: str, example_id: str, example: ExampleUpdate):
-    return dataset_service.update_example(dataset_id, example_id, example.model_dump())
+    try:
+        return dataset_service.update_example(dataset_id, example_id, example.model_dump())
+    except ValueError:
+        raise HTTPException(404, "Example not found")
 
 
 @router.delete("/datasets/{dataset_id}/examples/{example_id}")
