@@ -1,11 +1,26 @@
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+ARG GPU_TYPE=cuda
+
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS base-cuda
+FROM intel/intel-extension-for-pytorch:2.3.110-xpu AS base-xpu
+FROM ubuntu:22.04 AS base-cpu
+
+FROM base-${GPU_TYPE} AS final
 
 RUN apt-get update && apt-get install -y python3 python3-pip git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY backend/requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+ARG GPU_TYPE=cuda
+COPY backend/requirements*.txt ./
+
+# Install appropriate requirements based on GPU type
+RUN if [ "$GPU_TYPE" = "cuda" ]; then \
+      pip3 install --no-cache-dir -r requirements-cuda.txt; \
+    elif [ "$GPU_TYPE" = "xpu" ]; then \
+      pip3 install --no-cache-dir -r requirements-xpu.txt; \
+    else \
+      pip3 install --no-cache-dir -r requirements.txt; \
+    fi
 
 COPY backend/ ./backend/
 COPY data/ ./data/

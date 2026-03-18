@@ -267,20 +267,29 @@ export default function TrainingPage({ wsMessages }: TrainingPageProps) {
       {/* Jobs & Metrics */}
       <div className="flex-1 flex flex-col overflow-auto">
         {/* GPU Status */}
-        {gpu?.gpus?.length > 0 && (
+        {gpu && (
           <div className="border-b p-4">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               <Monitor className="w-4 h-4 text-muted-foreground" />
-              {gpu.gpus.map((g: any) => (
+              <Badge variant={gpu.device_type === 'cpu' ? 'secondary' : 'success'}>
+                {gpu.device_type?.toUpperCase() || 'Unknown'}
+              </Badge>
+              {gpu.gpus?.length > 0 ? gpu.gpus.map((g: any) => (
                 <div key={g.id} className="flex items-center gap-3 text-sm">
                   <span className="font-medium">{g.name}</span>
-                  <span>{g.memory_used}MB / {g.memory_total}MB</span>
-                  <div className="w-24 h-2 bg-secondary rounded-full overflow-hidden">
-                    <div className="h-full bg-primary rounded-full" style={{ width: `${(g.memory_used / g.memory_total) * 100}%` }} />
-                  </div>
-                  <span>{g.gpu_util?.toFixed(0)}% util</span>
+                  {g.memory_total != null && (
+                    <>
+                      <span>{g.memory_used ?? '?'}MB / {g.memory_total}MB</span>
+                      <div className="w-24 h-2 bg-secondary rounded-full overflow-hidden">
+                        <div className="h-full bg-primary rounded-full" style={{ width: `${((g.memory_used ?? 0) / g.memory_total) * 100}%` }} />
+                      </div>
+                    </>
+                  )}
+                  {g.gpu_util != null && <span>{g.gpu_util.toFixed(0)}% util</span>}
                 </div>
-              ))}
+              )) : gpu.device_type === 'cpu' ? (
+                <span className="text-sm text-muted-foreground">No GPU detected — running on CPU</span>
+              ) : null}
             </div>
           </div>
         )}

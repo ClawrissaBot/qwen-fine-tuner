@@ -138,25 +138,8 @@ class TrainingManager:
         return output_dir / "adapter"
 
     def gpu_status(self) -> dict:
-        try:
-            import GPUtil
-            gpus = GPUtil.getGPUs()
-            return {
-                "gpus": [
-                    {
-                        "id": g.id,
-                        "name": g.name,
-                        "memory_total": g.memoryTotal,
-                        "memory_used": g.memoryUsed,
-                        "memory_free": g.memoryFree,
-                        "gpu_util": g.load * 100,
-                        "temperature": g.temperature,
-                    }
-                    for g in gpus
-                ]
-            }
-        except Exception:
-            return {"gpus": [], "error": "GPU monitoring unavailable"}
+        from ..core.device import gpu_status as _gpu_status
+        return _gpu_status()
 
     def shutdown(self):
         for event in self._stop_flags.values():

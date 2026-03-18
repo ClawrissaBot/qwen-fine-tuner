@@ -1,0 +1,3 @@
+# CUDA-specific dependencies (NVIDIA GPUs)
+-r requirements.txt
+bitsandbytes==0.44.1

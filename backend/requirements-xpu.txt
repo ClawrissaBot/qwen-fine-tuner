@@ -1,0 +1,6 @@
+# XPU-specific dependencies (Intel Arc GPUs)
+# Note: Install torch with XPU support first:
+#   pip install torch==2.4.1 --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+-r requirements.txt
+intel-extension-for-pytorch==2.4.10
+intel-extension-for-transformers>=1.4.0

@@ -1,0 +1,18 @@
+version: "3.8"
+
+# Intel Arc GPU override — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.intel.yml up --build
+
+services:
+  backend:
+    build:
+      args:
+        GPU_TYPE: xpu
+    deploy:
+      resources:
+        reservations: {}  # Clear nvidia reservation
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render

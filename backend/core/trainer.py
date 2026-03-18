@@ -1,8 +1,9 @@
-"""Core fine-tuning logic for Qwen3 models."""
+"""Core fine-tuning logic for Qwen3 models — supports CUDA, Intel XPU, and CPU."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from pathlib import Path
@@ -21,6 +22,19 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
 from trl import SFTTrainer, SFTConfig
+
+from .device import (
+    get_device,
+    get_device_map,
+    get_dtype,
+    is_cuda,
+    is_xpu,
+    is_cpu,
+    has_bitsandbytes,
+    has_ipex_quantization,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class MetricsCallback(TrainerCallback):
@@ -94,6 +108,94 @@ def load_dataset_from_config(config: dict) -> tuple[Dataset, Dataset | None]:
     return ds, None
 
 
+def _build_quantization_config(config: dict):
+    """Build quantization config appropriate for the detected device.
+
+    Returns (quantization_config, method_override) where method_override is
+    the effective method to use ('qlora' or 'lora' if quantization isn't available).
+    """
+    method = config.get("method", "lora")
+    if method != "qlora":
+        return None, method
+
+    bits = config.get("quant_bits", 4)
+
+    # CUDA: use bitsandbytes
+    if is_cuda() and has_bitsandbytes():
+        compute_dtype = get_dtype(prefer_bf16=config.get("bf16", False))
+        if bits == 4:
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=compute_dtype,
+                bnb_4bit_use_double_quant=True,
+            ), "qlora"
+        else:
+            return BitsAndBytesConfig(load_in_8bit=True), "qlora"
+
+    # XPU: try intel-extension-for-transformers
+    if is_xpu() and has_ipex_quantization():
+        logger.info("Using Intel Extension for Transformers quantization on XPU")
+        # IEFT handles quantization at model load time; we return a marker
+        # and handle it in the model loading step
+        return {"_ipex_quantization": True, "bits": bits}, "qlora"
+
+    # Fallback: no quantization available, use LoRA instead
+    logger.warning(
+        "QLoRA requested but no quantization backend available for %s. "
+        "Falling back to standard LoRA.",
+        get_device(),
+    )
+    return None, "lora"
+
+
+def _load_model(model_id: str, quant_config, config: dict):
+    """Load model with device-appropriate settings."""
+    compute_dtype = get_dtype(prefer_bf16=config.get("bf16", False))
+    device_map = get_device_map()
+
+    # XPU with IPEX quantization
+    if isinstance(quant_config, dict) and quant_config.get("_ipex_quantization"):
+        try:
+            from intel_extension_for_transformers.transformers import AutoModelForCausalLM as IEFTModel
+
+            bits = quant_config.get("bits", 4)
+            logger.info("Loading model with IPEX %d-bit quantization on XPU", bits)
+            model = IEFTModel.from_pretrained(
+                model_id,
+                load_in_4bit=(bits == 4),
+                load_in_8bit=(bits == 8),
+                torch_dtype=compute_dtype,
+                device_map=device_map,
+                trust_remote_code=True,
+            )
+            return model
+        except Exception as e:
+            logger.warning("IPEX quantization failed (%s), loading without quantization", e)
+            quant_config = None
+
+    # Standard loading (CUDA with bitsandbytes, or no quantization)
+    bnb_config = quant_config if isinstance(quant_config, BitsAndBytesConfig) else None
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        torch_dtype=compute_dtype,
+        device_map=device_map,
+        trust_remote_code=True,
+    )
+
+    # For XPU without quantization, ensure model is on the right device
+    if is_xpu() and device_map == "xpu":
+        try:
+            import intel_extension_for_pytorch as ipex  # noqa: F401
+            model = model.to("xpu")
+        except Exception:
+            pass
+
+    return model
+
+
 def run_finetuning(
     config: dict,
     output_dir: str,
@@ -101,8 +203,10 @@ def run_finetuning(
     metrics_callback: Callable[[dict], None] | None = None,
 ):
     """Execute a fine-tuning run."""
+    device = get_device()
+    logger.info("Starting fine-tuning on device: %s", device)
+
     model_id = config["model_id"]
-    method = config.get("method", "lora")
     output_path = Path(output_dir)
     adapter_dir = output_path / "adapter"
     adapter_dir.mkdir(parents=True, exist_ok=True)
@@ -115,38 +219,26 @@ def run_finetuning(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Quantization config for QLoRA
-    bnb_config = None
-    if method == "qlora":
-        bits = config.get("quant_bits", 4)
-        if bits == 4:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16 if config.get("bf16") else torch.float16,
-                bnb_4bit_use_double_quant=True,
-            )
-        else:
-            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    # Quantization config
+    quant_config, effective_method = _build_quantization_config(config)
 
     # Load model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        quantization_config=bnb_config,
-        torch_dtype=torch.bfloat16 if config.get("bf16") else torch.float16,
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    model = _load_model(model_id, quant_config, config)
 
-    if method == "qlora":
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=config.get("gradient_checkpointing", True))
+    if effective_method == "qlora":
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=config.get("gradient_checkpointing", True)
+        )
 
     # LoRA config
     lora_config = LoraConfig(
         r=config.get("lora_r", 16),
         lora_alpha=config.get("lora_alpha", 32),
         lora_dropout=config.get("lora_dropout", 0.05),
-        target_modules=config.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]),
+        target_modules=config.get("target_modules", [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]),
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
@@ -161,13 +253,27 @@ def run_finetuning(
     data_format = config.get("data_format", "chat")
 
     def format_chat(example):
-        text = tokenizer.apply_chat_template(example["messages"], tokenize=False, add_generation_prompt=False)
+        text = tokenizer.apply_chat_template(
+            example["messages"], tokenize=False, add_generation_prompt=False
+        )
         return {"text": text}
 
     if data_format == "chat":
         train_ds = train_ds.map(format_chat)
         if val_ds:
             val_ds = val_ds.map(format_chat)
+
+    # Determine precision flags
+    use_bf16 = config.get("bf16", False)
+    use_fp16 = config.get("fp16", True) and not use_bf16
+
+    # XPU prefers bf16; CPU should use neither
+    if is_xpu():
+        use_bf16 = True
+        use_fp16 = False
+    elif is_cpu():
+        use_fp16 = False
+        use_bf16 = False
 
     # Training arguments
     training_args = SFTConfig(
@@ -180,8 +286,8 @@ def run_finetuning(
         warmup_ratio=config.get("warmup_ratio", 0.05),
         weight_decay=config.get("weight_decay", 0.01),
         max_seq_length=config.get("max_seq_length", 2048),
-        fp16=config.get("fp16", True) and not config.get("bf16", False),
-        bf16=config.get("bf16", False),
+        fp16=use_fp16,
+        bf16=use_bf16,
         gradient_checkpointing=config.get("gradient_checkpointing", True),
         save_steps=config.get("save_steps", 100),
         eval_steps=config.get("eval_steps", 50) if val_ds else None,
@@ -230,11 +336,14 @@ def merge_and_export(base_model: str, adapter_path: str, output_path: str):
     """Merge LoRA adapter back into base model and save."""
     from peft import PeftModel
 
+    compute_dtype = get_dtype(prefer_bf16=False)
+    device_map = get_device_map()
+
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
-        torch_dtype=torch.float16,
-        device_map="auto",
+        torch_dtype=compute_dtype,
+        device_map=device_map,
         trust_remote_code=True,
     )
     model = PeftModel.from_pretrained(model, adapter_path)

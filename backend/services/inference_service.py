@@ -1,8 +1,9 @@
-"""Model inference service for the playground."""
+"""Model inference service for the playground — supports CUDA, Intel XPU, and CPU."""
 
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any, Generator
 
 OUTPUT_DIR = Path("outputs")
 BOOKMARKS_FILE = OUTPUT_DIR / "bookmarks.json"
+
+logger = logging.getLogger(__name__)
 
 
 class InferenceService:
@@ -28,15 +31,29 @@ class InferenceService:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from peft import PeftModel
+        from ..core.device import get_device_map, get_dtype, is_xpu
+
+        compute_dtype = get_dtype(prefer_bf16=True)
+        device_map = get_device_map()
+
+        logger.info("Loading model %s (device_map=%s, dtype=%s)", model_id, device_map, compute_dtype)
 
         self._tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
         self._model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.float16,
-            device_map="auto",
+            torch_dtype=compute_dtype,
+            device_map=device_map,
             trust_remote_code=True,
         )
+
+        # Ensure model is on XPU if needed
+        if is_xpu() and device_map == "xpu":
+            try:
+                import intel_extension_for_pytorch as ipex  # noqa: F401
+                self._model = self._model.to("xpu")
+            except Exception:
+                pass
 
         if adapter_path and Path(adapter_path).exists():
             self._model = PeftModel.from_pretrained(self._model, adapter_path)

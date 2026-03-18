@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.backend
+      args:
+        GPU_TYPE: cuda
     ports:
       - "8000:8000"
     volumes:
